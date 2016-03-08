@@ -1,4 +1,4 @@
-"""asterix/secure_packet.py
+"""asterix/SecurePacket.py
 
 __author__ = "Petr Tobiska"
 
@@ -54,7 +54,7 @@ class SPI:
     CHSUM2_RC  = 0x0004   #  redundancy check
     CHSUM2_CC  = 0x0008   #  cryptographic checksum
     CHSUM2_DS  = 0x000C   #  digital signature
-    POR        = 0x0003   # maks for PoR
+    POR        = 0x0003   # mask for PoR
     POR_REQ    = 0x0001   #   PoR required
     POR_ERR    = 0x0002   #   send PoR on error only
 
