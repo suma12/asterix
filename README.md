@@ -4,7 +4,6 @@ https://github.com/suma12/asterix
 -------------------------------------------------------------------------------
 
 Author: Petr Tobiska, mailto:petr.tobiska@gmail.com,
-	              mailto:petr.tobiska@gemalto.com
 
 This file is a part of asterix, a framework for communication with smartcards
 based on pyscard.
@@ -24,7 +23,7 @@ along with pyscard; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 -------------------------------------------------------------------------------
-Last update : asterix 0.2 (December 2015)
+Last update : asterix 0.3dev (March 2016)
 -------------------------------------------------------------------------------
 
 asterix is a framework for communication with smartcards based on pyscard
@@ -81,15 +80,10 @@ Installation
 The asterix framework is packaged using the standard distutils python
 module. It is pure python implementation.
 
-Installing from .msi:
----------------------
-
-Run provided installer.
-
 Installing using distutils:
 ---------------------------
 
-Run
+Unzip asterix-<version>.zip, cd asterix-<version> and run
 python setup.py install
 
 -------------------------------------------------------------------------------
