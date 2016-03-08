@@ -30,7 +30,8 @@ import random
 
 __all__ = ( 'l2s', 's2l', 's2int', 'int2s', 's2sDER', 'lpad', 'derLen',
             'readDERlen', 'readDERtag', 'split2TLV', 'printTLV', 'findTLValue',
-            'randomBytes', 'swapNibbles', 'partition', 'bxor', 'pad80' )
+            'randomBytes', 'swapNibbles', 'partition', 'bxor',
+            'pad80', 'unpad80' )
 
 def l2s( data ):
     """ Transform list of u8 to string. """
@@ -208,12 +209,19 @@ def partition(alist, indices):
     indices = list( indices )
     return [alist[i:j] for i, j in zip([0]+indices, indices+[None])]
 
-re_pad80_8 = re.compile( r'^(.*)\x80\0{0,7}$' )
-re_pad80_16 = re.compile( r'^(.*)\x80\0{0,15}$' )
 def pad80( s, BS = 8 ):
     """ Pad bytestring s: add '\x80' and '\0'* so the result to be multiple of BS."""
     l = BS-1 - len( s ) % BS;
     return s + '\x80' + '\0'*l
+
+def unpad80( s, BS = 8 ):
+    """ Remove 80 00* padding. Return unpadded s.
+ Raise AssertionError if padding is wrong. """
+    for i in xrange( -1, -1-BS, -1 ):
+        if s[i] != '\0':
+            break
+    assert s[i] == '\x80', 'Wrong 80 00* padding'
+    return s[:i]
 
 def bxor( a, b ):
     """ XOR of binary strings a and b. """

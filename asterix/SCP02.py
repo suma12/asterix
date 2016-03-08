@@ -35,7 +35,7 @@ from Crypto.Cipher import DES, DES3
 from smartcard.System import readers
 from smartcard.CardConnectionDecorator import CardConnectionDecorator
 # asterix
-from formutil import l2s, partition, bxor, pad80, re_pad80_8 as re_pad
+from formutil import l2s, partition, bxor, pad80, unpad80
 from mycard import ISOException
 __all__ = ( 'SCP02', 'SCP02Connection' )
 
@@ -214,7 +214,7 @@ Input APDU and output APDU are list of uint8. """
             mac = [ ord(x) for x in mac ]
             if self.isENC:
                 k = DES3.new( self.ses_ENC, DES.MODE_CBC, ZERO8 )
-                data = [ ord(x) for x in k.encrypt( pad80( sapdu[5:] ))]
+                data = s2l( k.encrypt( pad80( sapdu[5:], 8 )))
                 lc = len( data )
             else:
                 data = apdu[5:]
@@ -239,9 +239,7 @@ Input APDU and output APDU are list of uint8. """
         k = DES3.new( self.ses_DEK, DES.MODE_ECB )
         ddata = k.decrypt( data )
         if zPad:
-            m = re_pad80.match( ddata )
-            assert m is not None, "Wrong padding"
-            return m.groups()[0]
+            return unpad80( ddata, 8 )
         else:
             return ddata
  
@@ -298,7 +296,7 @@ secured/unsecured APDU. """
             "Single DES plus final 3DES """
         e = DES.new( self.ses_C_MAC[:8], DES.MODE_ECB )
         d = DES.new( self.ses_C_MAC[8:], DES.MODE_ECB )
-        s = pad80( s )
+        s = pad80( s, 8 )
         q = len( s ) / 8
         h = zResetICV and ZERO8 or self.icv
         for i in xrange(q):
@@ -311,7 +309,7 @@ secured/unsecured APDU. """
     def calcMAC_3d( self, s ):
         """ Pad string and calculate MAC according to B.1.2.1 - Full 3DES """
         e = DES3.new( self.ses_ENC, DES.MODE_ECB )
-        s = pad80( s )
+        s = pad80( s, 8 )
         q = len( s ) / 8
         h = ZERO8
         for i in xrange(q):
