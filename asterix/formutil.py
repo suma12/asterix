@@ -27,11 +27,13 @@ from binascii import hexlify, unhexlify
 from struct import pack, unpack
 import random
 # alternatively: from Crypto.Random import random
+from Crypto.Util import number
+from Crypto.PublicKey import RSA
 
-__all__ = ( 'l2s', 's2l', 's2int', 'int2s', 's2sDER', 'lpad', 'derLen',
+__all__ = ( 'l2s', 's2l', 's2int', 'int2s', 's2sDER', 'lpad', 'derLen', 'derLV',
             'readDERlen', 'readDERtag', 'split2TLV', 'printTLV', 'findTLValue',
-            'randomBytes', 'swapNibbles', 'partition', 'bxor',
-            'pad80', 'unpad80' )
+            'randomBytes', 'swapNibbles', 'partition', 'chunks', 'bxor',
+            'pad80', 'unpad80', 'dict2RSA', 's2ECP' )
 
 def l2s( data ):
     """ Transform list of u8 to string. """
@@ -89,6 +91,10 @@ def derLen( val ):
     if l < 0x80: return chr( l )
     s = int2s( l )
     return chr( 0x80 + len(s)) + s
+
+def derLV( val ):
+    """ ASN1 DER length of val + val"""
+    return derLen( val ) + val
 
 def readDERtag( data ):
     """ Read ASN1 DER tag from data, returns ( tag, skip ),
@@ -209,6 +215,15 @@ def partition(alist, indices):
     indices = list( indices )
     return [alist[i:j] for i, j in zip([0]+indices, indices+[None])]
 
+def chunks( data, lens ):
+    """Split data to pieces of required lengths.
+Returns generator providing len(lens)+1 pieces, the last is rest."""
+    pos = 0
+    for l in lens:
+        yield data[pos:pos+l]
+        pos += l
+    yield data[pos:]    # rest of data
+
 def pad80( s, BS = 8 ):
     """ Pad bytestring s: add '\x80' and '\0'* so the result to be multiple of BS."""
     l = BS-1 - len( s ) % BS;
@@ -228,4 +243,51 @@ def bxor( a, b ):
     assert len( a ) == len( b ),\
         'String XOR: lengths differ: %d vs %d\n' % (len(a), len(b))
     return ''.join( map( lambda x: chr( ord(x[0]) ^ ord(x[1])) , zip( a, b )))
+
+def dict2RSA( **kw ):
+    """ Create Crypto.PublicKey.RSA from dict
+Required RSA priv. key params (as long)
+ n, e    - modulus and public exponent (public key only)
+ n, d, e - modulus, private and public exponent
+or
+ p, q, e - primes p, q, and public exponent e
+If also dp, dq, qinv present, they are checked to be consistent.
+Default value for e is 0x10001
+Return Crypto.PublicKey.RSA object
+dp = d mod (p-1), dq = d mod (q-1), q*qinv mod p = 1
+"""
+    for par in ( 'n', 'd', 'p', 'q', 'dp', 'dq', 'qinv' ):
+        if par in kw:
+            assert isinstance( long( kw[par] ), long ), \
+                "RSA parameter %s must be long" % par
+    e = long( kw.get( 'e', 0x10001L ))
+    if all([par not in kw for par in ( 'd', 'p', 'q', 'dp', 'dq', 'qinv' )]):
+        assert 'n' in kw, "At least modulus must be in dict"
+        return RSA.construct(( kw['n'], e ))
+    if 'n' in kw and 'd' in kw:
+        return RSA.construct(( kw['n'], e, kw['d'] ))
+    assert 'p' in kw and 'q' in kw, "Either n, d or p, q must be in dict"
+    p = kw['p']
+    q = kw['q']
+    n = p*q
+    d = number.inverse( e, (p-1)*(q-1))
+    if 'd' in kw:
+        assert d == kw['d'], "Inconsinstent private exponent"
+    if 'dp' in kw:
+        assert d % (p-1) == kw['dp'], "Inconsistent d mod (p-1)"
+    if 'dq' in kw:
+        assert d % (q-1) == kw['dq'], "Inconsistent d mod (q-1)"
+    u = number.inverse( q, p )
+    if 'qinv' in kw:
+        assert u == kw['qinv'], "Inconsistent q inv"
+    return RSA.construct(( n, e, d, q, p, u ))
+
+def s2ECP( s, bytelen = None ):
+    """ Convert string representing uncompressed ECC point
+ to x, y coordinates (tuple of long)"""
+    assert len( s ) % 2 == 1, "Even length of s"
+    l = ( len( s ) - 1 ) / 2
+    if bytelen: assert l == bytelen
+    assert s[0] == '\x04', "Point shall start by '04'"
+    return long( s2int( s[1:l+1] )), long( s2int( s[l+1:] ))
 
