@@ -33,9 +33,10 @@ from Crypto.Hash import SHA
 from Crypto.Signature import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util import number
+from Crypto.Cipher import DES, DES
 # asterix
-from formutil import int2s, derLen
-__all__ = ( 'Applet', 'RSAtoken', 'DEStoken' )
+from formutil import int2s, derLen, pad80
+__all__ = ( 'Applet', 'RSAtoken', 'DEStoken', 'DESsign', 'RSAsign' )
 
 def berlv( strval ):
     """ Prepend length (coded as ASN1 DER) of the strval and return as LV."""
@@ -61,7 +62,6 @@ Expected parameters (in dict):
   AID_package  - (string, mandatory)
   AID_module   - (string, mandatory)
   AID_instance - (string, optional, default AID_module)
-  AID_SD       - (string, optional, default not present)
   privileges   - (string, optional, default '\0'
   par_sys      - System specific params, tag EF, list of strings
                  optional, default ['C8020000', 'C7020000'] + SIMtoolkit
@@ -75,8 +75,7 @@ Expected parameters (in dict):
   par_applet   - applet specific parameters, tag C9, string, optional
   file_ijc     - path/filename to *.ijc
 """
-        keywords = ( 'AID_package', 'AID_module', 'AID_instance',
-                     'privileges',
+        keywords = ( 'AID_package', 'AID_module', 'AID_instance', 'privileges',
                      'par_sys', 'par_sys_sim',
                      'par_UICC_toolkit', 'par_UICC_DAP',
                      'par_UICC_access', 'par_UICC_admin_access',
@@ -142,11 +141,19 @@ Expected parameters (in dict):
                [ ord( x ) for x in data ]
         return apdu
 
-    def load( self, datalen = 239, token = None ):
+    def load( self, datalen = 239, token = None, DAP = [], cipher = None,
+              AID_SD = '' ):
         """ Build list of APDUs for InstallForLoad and Load.
   datalen      - data length in Load APDUs
   token        - instance of Token, calculates token for Delegated
-                 management if present"""
+                 management if present
+  DAP          - list of ( aid, signature_function ). For each item, E2 TLV
+                 is inserted (each signature_function called on LFDB hash).
+                 Example of signature_function: DESsign.calc or RSAsign.calc
+  cipher       - cipher function for Ciphere Load File Data Block
+                 if present, D4 #( Cipher( <ijc content> ) sent instead of C4
+  AID_SD       - AID of SD to load package to
+"""
         f = open( self.file_ijc, "rb" )
         ijc_data = f.read()
         ijc_len = len( ijc_data )
@@ -155,25 +162,21 @@ Expected parameters (in dict):
         ijc_hash = h.digest()
         print "Loading '%s', len = %d, SHA1 = %s" % \
             ( self.file_ijc, ijc_len, hexlify( ijc_hash ).upper())
-        load_data = '\xC4' + berlv( ijc_data )
 
         # build Install for load APDU
-        if ijc_len < 0x8000:
-            params = '\xC6' + berlv( pack( ">H", ijc_len ))
-        else:
-            params = '\xC6' + berlv( pack( ">L", ijc_len ))
         if 'par_sys' in self.__dict__:
             params += ''.join( self.par_sys )
         else:
-            params += unhexlify( "C8020000C7020000" )
+            params += unhexlify( "C6020000C7020000C8020000" )
         params = '\xEF' + berlv( params )
         if token:
             params += token.getCRT()
 
-        AID_SD = self.__dict__.get( 'AID_SD', '' )
+        # put ijc hash only if token or DAP is present
+        ins_hash = ( token is not None or len( DAP ) > 0 ) and ijc_hash or ''
         data = berlv( self.AID_package ) + \
                berlv( AID_SD ) + \
-               berlv( ijc_hash ) + \
+               berlv( ins_hash ) + \
                berlv( params )
 
         if token:
@@ -187,7 +190,17 @@ Expected parameters (in dict):
         apdus = [ [ 0x80, INS_INSTALL, 2, 0, len( data ) ] +
                   [ ord(x) for x in data ]]
 
-        # build Load APDUs
+        # build Load APDUs GP CS 2.2.1 11.6.2.3
+        load_data = ''
+        E2template = GAF( "E2 #( 4F #( $aid ) C3 #( $sig ))" )
+        for d in DAP:
+            sig = d[1]( icj_hash ) # calculate signature
+            load_data += E2template.eval( aid=d[0], sig=sig )
+        if cipher:
+            load_data += '\xD4' + berlv( cipher( ijc_data ))
+        else:
+            load_data += '\xC4' + berlv( ijc_data )
+
         napdu = ( len( load_data ) + datalen-1 ) / datalen
         P1 = 0
         for i in xrange( napdu ):
@@ -262,6 +275,43 @@ Expected parameters (in dict):
                [ ord(x) for x in data ]
         return apdu
 
+class DESsign:
+    """ DES sign scheme as defined in GP CS 2.2.1, B.1.2.2"""
+    def __init__( self, key ):
+        """ Constructor, key is 3DES2k."""
+        assert len( key ) == 16, "3DES key must be 16B long"
+        self.e = DES.new( key[:8], DES.MODE_ECB )
+        self.d = DES.new( key[8:], DES.MODE_ECB )
+
+    def calc( self, s ):
+        " Pad string and calculate MAC according to B.1.2.2 - " +\
+            "Single DES plus final 3DES """
+        s = pad80( s, 8 )
+        q = len( s ) / 8
+        h = '\0'*8   # zero ICV
+        for i in xrange(q):
+            h = self.e.encrypt( bxor( h, s[8*i:8*(i+1)] ))
+        h = self.d.decrypt( h )
+        h = self.e.encrypt( h )
+        return h
+
+class RSAsign:
+    """ RSA sign scheme RSASSA-PKCS-v1_5 with SHA1"""
+    def __init__( self, **kw ):
+        """ Constructor, kw is dict of CRT paramters and RSA key.
+Required RSA priv. key params (as long)
+ n, d, e - modulus and private exponent
+or
+ p, q, e - primes p, q, and public exponent e
+If also dp, dq, qinv present, they are checked to be consistent.
+Default value for e is 0x10001"""
+        self.key = dict2RSA( **kw )
+        assert self.key.has_private(), "RSA token requires private key"
+    def calc( self, s ):
+        mhash = SHA.new( s )
+        signer = PKCS1_v1_5.new( self.key )
+        return signer.sign( mhash )
+
 class Token:
     """ Token processor """
     CRTtags = ( 't42', 't45', 't5F20', 't93' )
@@ -280,66 +330,20 @@ class Token:
             return '\xB6' + berlv( data )
         else:
             return ''
-                
+    def calc( self, s ):
+        self.sign.calc( s )
+
 class DEStoken( Token ):
     """ DES token as defined in Global Platform Card Specification 2.2 AmA"""
     def __init__( self, key, **kw ):
         """ Constructor, key is 3DES2k, kw is dict of CRT paramters."""
         super( DEStoken, self ).__init__( **kw )
-        assert len( key ) == 16, "3DES key must be 16B long"
-        self.e = DES.new( key[:8], DES.MODE_ECB )
-        self.d = DES.new( key[8:], DES.MODE_ECB )
+        self.sign = DESsign( key )
 
-    def calc( self, s ):
-        " Pad string and calculate MAC according to B.1.2.2 - " +\
-            "Single DES plus final 3DES """
-        s = pad80( s )
-        q = len( s ) / 8
-        h = '\0'*8   # zero ICV
-        for i in xrange(q):
-            h = self.e.encrypt( bxor( h, s[8*i:8*(i+1)] ))
-        h = self.d.decrypt( h )
-        h = self.e.encrypt( h )
-        return h
-        
 class RSAtoken( Token ):
     """ RSA token as defined in Global Platform Card Specification 2.2.1 C.4"""
     def __init__( self, **kw ):
         """ Constructor, kw is dict of CRT paramters and RSA key.
-Required RSA priv. key params (as long)
- n, d, e - modulus and private exponent
-or
- p, q, e - primes p, q, and public exponent e
-If also dp, dq, qinv present, they are checked to be consistent.
-Default value for e is 0x10001
-"""
-#        super( RSAtoken, self ).__init__( **kw )
+For RSA paramteres see RSAsign constructor"""
         Token.__init__( self, **kw )
-        # check RSA parameters
-        for par in ( 'n', 'd', 'e', 'p', 'q', 'dp', 'dq', 'dqinv' ):
-            if par in kw:
-                assert isinstance( long( kw[par] ), long ), \
-                    "RSA parameter %s must be long" % par
-        e = long( kw.get( 'e', 0x10001L ))
-        if 'n' in kw and 'd' in kw:
-            self.key = RSA.construct(( n, e, d ))
-        elif 'p' in kw and 'q' in kw:
-            p = kw['p']
-            q = kw['q']
-            n = p*q
-            d = number.inverse( e, (p-1)*(q-1))
-            if 'd' in kw:
-                assert d == kw['d'], "Inconsinstent private exponent"
-            if 'dp' in kw:
-                assert d % (p-1) == kw['dp'], "Inconsistent d mod (p-1)"
-            if 'dq' in kw:
-                assert d % (q-1) == kw['dq'], "Inconsistent d mod (q-1)"
-            u = number.inverse( q, p )
-            if 'qinv' in kw:
-                assert u == kw['qinv'], "Inconsistent q inv"
-            self.key = RSA.construct(( n, e, d, q, p, u ))
-    def calc( self, s ):
-        mhash = SHA.new( s )
-        signer = PKCS1_v1_5.new( self.key )
-        return signer.sign( mhash )
-
+        self.sign = RSAsign( **kw )
