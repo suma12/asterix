@@ -1,4 +1,4 @@
-"""APDU.py
+""" asterix/APDU.py
 
 __author__ = "Petr Tobiska"
 
@@ -28,18 +28,24 @@ References:
 
 """
 
-import re
+import re, hashlib, random
 from struct import pack, unpack
 from binascii import hexlify, unhexlify
 # PyCrypto
 from Crypto.Cipher import DES, DES3, AES
+# ECSDA
+from ecdsa import ecdsa, ellipticcurve
 # pyscard
 from smartcard.ATR import ATR
 # asterix
-from formutil import l2s, derLen, s2int, split2TLV, findTLValue, swapNibbles
+from formutil import l2s, derLen, derLV, s2int, int2s, s2ECP, chunks,\
+    split2TLV, findTLValue, swapNibbles
 from GAF import GAF
+from applet import DESsign
+from SCP03 import CMAC
 from mycard import ISOException, resetCard
-__all__ = ( 'putKey', 'storeDataPutKey',
+__all__ = ( 'calcKCV', 'putKey', 'storeDataPutKey',
+            'push2B_DGI', 'X963keyDerivation', 'Push3scenario',
             'selectApplet', 'openLogCh', 'closeLogCh',
             'getStatus', 'getExtCardRes', 'getData',
             'selectFile', 'readBinary', 'readRecord',
@@ -119,7 +125,7 @@ Currently only Format1 supported.
 
     data = chr( newKeyVersion )
     for kc in keyComponents:
-        keyType, keyVal = kc
+        keyType, keyVal = kc[:2] # ignore eventual keyUsage and keyAccess
         assert 0 <= keyType < 0xFF
         
         if keyDEK:
@@ -146,6 +152,44 @@ Currently only Format1 supported.
 
     apdu = [ 0x80, INS_PUTKEY, P1, P2, len( data ) ] + [ ord(x) for x in data ]
     return apdu
+
+def push2B_DGI( keyVer, keys, keyCASDenc ):
+    """ Create DGI 00A6 and 8010 for Push2B scenario
+keyVer     - key verions (u8)
+keys       - (( keytype, keyvalue )); 1 or 3 sym. keys
+keyCASDenc - a method to call for encryption 8010 content
+Return DGIs built (as list of strings)."""
+    # DGI tag on 2B (GP Card Spec 2.2.1, 11.1.12)
+    # DGI length coding as in GP Systems Scripting Language Spec. v1.1.0, an. B
+    # i.e. on 1B for x < 255, FF<yyyy> for x >=255
+    KAT = GAF( """ -- Control Reference Template (KAT)
+    -- see GP 2.2.1 AmA 4.4
+    00A6 #[
+        A6 #(
+          90 #( 04 )        -- scenario identifier: Push#2B
+          95 #( $keyUsage )
+          80 #( $keyType )
+          81 #( $keyLen )
+          83 #( $keyVer )
+        --  45 #( $SDIN ) -- optional Security Domain Image Number
+    )] """ )
+    assert len( keys ) in ( 1, 3 ), "One or three sym. keys expected"
+    keyUsage = len( keys ) == 1 and '\x5C' or '\x10' # Tab. 13
+    keyType = keys[0][0]
+    assert all( [ k[0] == keyType for k in keys ]), "Key types differ"
+    # remap keyType to '80' as required by GP UICC config 10.3.1
+    if keyType in ( KeyType.TDES_CBC,
+                    KeyType.DES_ECB,
+                    KeyType.DES_CBC ):
+        keyType = KeyType.DES_IMPLICIT
+    lens = [ len( k[1] ) for k in keys ]
+    l = max( lens )
+    assert l == min( lens ), "Key lengths differ"
+    dgi00A6 = KAT.eval( keyUsage = keyUsage, keyType = chr( keyType ),
+                     keyLen = chr( l ), keyVer = chr( keyVer ))
+    data = keyCASDenc( ''.join( [ k[1] for k in keys ] ))
+    dgi8010 = pack( ">H", 0x8010 ) + chr( len(data)) + data
+    return ( dgi00A6, dgi8010 )
 
 def storeDataPutKeyDGI( keyVer, keyComponents, keyId = 1, keyDEK = None ):
     """Build DGI for Store Data for Put Key.
@@ -207,7 +251,8 @@ def storeDataPutKey( keyVer, keyComponents, keyId = 1, keyDEK = None ):
     """Build APDU for Store Data for Put Key.
 keyVer, keyComponents, keyId and keyDEK as in storeDataPutKeyDGI.
 Return APDU a u8 list."""
-    dgi00B9, dgi8113 = storeDataPutKeyDGI( keyVer, keyComponents, keyId, keyDEK )
+    dgi00B9, dgi8113 = storeDataPutKeyDGI( keyVer, keyComponents,
+                                           keyId, keyDEK )
     data = dgi00B9 + ''.join( dgi8113 )
     assert len( data ) < 256, "Longer Put Key not implemented"
     P1 = 0x88
@@ -215,6 +260,204 @@ Return APDU a u8 list."""
     apdu = [ 0x80, INS_STOREDATA, P1, P2, len( data ) ] +\
            [ ord(x) for x in data ]
     return apdu
+
+####### Scenario 3 stuff
+# Preloaded ECC Curve Parameters, GP 2.2.1 AmE 4.5
+# N.B., all have cofactor = 1
+ECC_Curves = {
+    0x00: ecdsa.generator_256,  # NIST P-256
+    0x01: ecdsa.generator_384,  # NIST P-384
+    0x02: ecdsa.generator_521,  # NIST P-521
+    # 0x03: brainpoolP256r1,
+    # 0x04: brainpoolP256t1,
+    # 0x05: brainpoolP384r1,
+    # 0x06: brainpoolP384t1,
+    # 0x07: brainpoolP512r1,
+    # 0x08: brainpoolP512t1,
+}
+
+# tag definition
+T_IIN        = 0x42
+T_SDIN = T_CIN = 0x45
+T_keyType    = 0x80
+T_keyLen     = 0x81
+T_keyID      = 0x82
+T_keyVer     = 0x83
+T_DR         = 0x85
+T_HostID     = 0x84
+T_receipt    = 0x86
+T_scenarioID = 0x90
+T_seqCounter = 0x91
+T_keyUsage   = 0x95
+T_keyAcc     = 0x96
+T_CRT        = 0xA6
+
+def X963keyDerivation( sharedSecret, bytelen, sharedInfo = '',
+                       h = hashlib.sha256 ):
+    """ X9.63 Key Derivation Function as deifned in TR-03111 4.3.3
+bytelen      - expected length of Key Data
+sharedSecret, sharedInfo - strings
+h            - function to create HASH object (default hashlib.sha256)
+Return Key Data (string)
+Reference: TR-03111: BSI TR-03111 Elliptic Curve Cryptography, Version 2.0
+   https://www.bsi.bund.de/SharedDocs/Downloads/EN/BSI/Publications/TechGuidelines/TR03111/BSI-TR-03111_pdf.html"""
+    keyData = ''
+    l = h().digest_size
+    j = ( bytelen - 1 )/l + 1
+    for i in xrange( 1, 1+j ):
+        keyData += h( sharedSecret + pack( ">L", i ) + sharedInfo ).digest()
+    return keyData[:bytelen]
+
+def DESMAC( key, data ):
+    """ Calculate MAC single DES with final 3DES"""
+    return DESsign( key ).calc( data )
+
+ktDES = KeyType.DES_IMPLICIT
+ktAES = KeyType.AES
+class Push3scenario:
+    """ Implementation of Global Platform Push #3 scenario (ECKA)"""
+    def __init__( self, keyParRef, pkCASD, **kw ):
+        """ Constructor
+keyParRef - Key Parameter Reference
+pkCASD    - PK.CASD.ECKA (tuple long x, long y)
+optional **kw: IIN, CIN (as strings)"""
+        assert keyParRef in ECC_Curves, \
+            "Unknown Key param reference 0x%02X" % keyParRef
+        self.keyParRef = keyParRef
+        self.generator = ECC_Curves[keyParRef]
+        self.curve = self.generator.curve()
+        self.bytelen = len( int2s( self.curve.p()))
+        assert self.bytelen in ( 32, 48, 64, 66 ) # currently allowed keys
+        pkCASDxy = s2ECP( pkCASD )
+        assert self.curve.contains_point( *pkCASDxy ),\
+            "PK.CASD.ECKA not on the curve"
+        self.pkCASD = ellipticcurve.Point( self.curve, *pkCASDxy )
+        for k in ( 'IIN', 'CIN' ):
+            if k in kw:
+                assert isinstance( kw[k], str )
+                self.__dict__[k] = kw[k]
+
+    def makeDGI( self, keyVer, privkey = None,
+                 keys = ([( KeyType.AES, 16 )]*3 ),
+                 zDelete = False, zDR = False, zID = False, **kw ):
+        """ Prepare data for Push #3 scenario and generate keys.
+keyVer     - key version to create
+privkey    - eSK.AP.ECKA (secret multiplier as string)
+             randomly generated if None
+keys       - [ ( keyType, keyLen )] to generate
+zDelete, zDR, zID - bits 1-3 of Parameters of scenario, (GP AmE, Tab. 4-17)
+optional **kw: keyId, seqCounter, SDIN, HostID
+Return <data for StoreData>"""
+        if privkey is None:
+            secexp = random.randrange( 2, self.generator.order())
+        else:
+            secexp = s2int( privkey )
+            assert 1 < secexp < self.generator.order(), "Wrong eSK.AP.ECKA"
+        print "eSK.AP.ECKA = %X" % secexp
+        pubkey = self.generator * secexp
+        dgi7F49 = pack( ">HBB", 0x7F49, 2*self.bytelen+1, 4 ) + \
+                  int2s( pubkey.x(), self.bytelen * 8 ) + \
+                  int2s( pubkey.y(), self.bytelen * 8 )
+        # calculate Shared Secret, suppose that cofactor is 1
+        S_AB = secexp * self.pkCASD
+        self.sharedSecret = int2s( S_AB.x(), self.bytelen * 8 )
+        print "Shared Secret =", hexlify( self.sharedSecret ).upper()
+        # build DGI 00A6
+        if zID:
+            assert hasattr( self, 'IIN' ), "Missing IIN while CardId requested"
+            assert hasattr( self, 'CIN' ), "Missing cIN while CardId requested"
+            assert 'HostID' in kw and isinstance( kw['HostID'], str )
+            self.HostCardID = ''.join([ derLV( v ) for v in
+                                        ( kw['HostID'], self.IIN, self.CIN )])
+        else:
+            self.HostCardID = ''
+        self.zDR = zDR
+        scenarioPar = ( zDelete and 1 or 0 ) +\
+                      ( zDR and 2 or 0 ) +\
+                      ( zID and 4 or 0 )
+        assert all([ k[0] in ( KeyType.DES_IMPLICIT, KeyType.AES )
+                     for k in keys ])
+        ktl1 = keys[0]
+        zDifKey = any([ keys[i] != ktl1 for i in xrange( 1, len(keys)) ])
+        tA6value = pack( "BBBB", T_scenarioID, 2, 3, scenarioPar )
+        if zDifKey:
+            self.receiptAlgo = CMAC
+            self.keyLens = [ 16 ] + [ k[1] for k in keys ]
+            self.keyDesc = ''
+            if 'keyId' in kw:
+                tA6value += pack( "BBB", T_keyID, 1, kw['keyId'] )
+            tA6value += pack( "BBB", T_keyVer, 1, keyVer )
+            # default keyUsage from GP 2.2.1 AmE tab. 4-16 for ENC, MAC, DEK
+            for k, keyUsage in zip( keys, ( 0x38, 0x34, 0xC8 )):
+                if len( k ) > 2:
+                    keyUsage = k[2]
+                tB9value = pack( "BBB", T_keyUsage, 1, keyUsage )
+                if len( k ) >= 4: # optional key Access as fourth elem. of key
+                    tB9value += pack( "BBB", T_keyAcc, 1, k[3] )
+                tB9value += pack( "BBB", T_keyType, 1, k[0] )
+                tB9value += pack( "BBB", T_keyLen, 1, k[1])
+                self.keyDesc += pack( "BBB", keyUsage, *k[:2] )
+                tA6value += '\xB9' + derLV( tB9value )
+        else:
+            assert len( keys ) in ( 1, 3 ), \
+                "One or three secure ch. keys expected."
+            self.keyLens = [ ktl1[1] ] * ( 1 + len( keys ))
+            self.receiptAlgo = ktl1[0] == KeyType.AES and CMAC or DESMAC
+            keyUsage = len( keys ) == 1 and 0x5C or 0x10
+            self.keyDesc = pack( "BBB", keyUsage, *ktl1[:2] )
+            tA6value += pack( "BBB", T_keyUsage, 1, keyUsage )
+            if len( ktl1 ) == 4:
+                tA6value += pack( "BBB", T_keyAcc, 1, ktl1[3] )
+            tA6value += pack( "BBB", T_keyType, 1, ktl1[0] )
+            tA6value += pack( "BBB", T_keyLen, 1, ktl1[1] )
+            if 'keyId' in kw:
+                tA6value += pack( "BBB", T_keyID, 1, kw['keyId'] )
+            tA6value += pack( "BBB", T_keyVer, 1, keyVer )
+        if 'seqCounter' in kw:
+            tA6value += chr( T_seqCounter ) + derLV(kw['seqCounter'])
+        if 'SDIN' in kw:
+            tA6value += chr(T_SDIN) + derLV(kw['SDIN'])
+        if zID:
+            tA6value += chr(T_HostID) + derLV(kw['HostID'])
+        self.tA6 = chr(T_CRT) + derLV( tA6value )
+        dgi00A6 = pack( ">HB", 0x00A6, len( self.tA6 )) + self.tA6
+        return ( dgi00A6, dgi7F49 )
+
+    def generKeys( self, respData ):
+        """ Verify receipt and generate symmetric keys.
+respData - response to Store Data (string)
+Return generated keys (tuple of strings)"""
+        try: data2rec = self.tA6
+        except KeyError:
+            print "Run makeDGI first"
+            return
+        respTLV = split2TLV( respData )
+        if self.zDR:
+            lenDR = ( self.bytelen / 32 )* 16 # map to 16, 24 or 32
+            DR = respTLV[0][1]
+            assert len( respTLV ) == 2 and \
+                respTLV[0][0] == T_DR and len( DR ) == lenDR
+            data2rec += pack( "BB", T_DR, lenDR ) + DR
+        else:
+            assert len( respTLV ) == 1
+        assert respTLV[-1][0] == T_receipt
+        receipt = respTLV[-1][1]
+
+        sharedInfo = self.keyDesc
+        if self.zDR:
+            sharedInfo += DR
+        try: sharedInfo += self.HostCardID
+        except KeyError: pass
+        print "Shared Info =", hexlify( sharedInfo ).upper()
+
+        keyData = X963keyDerivation( self.sharedSecret, sum(self.keyLens),
+                                     sharedInfo )
+        keyDataIt = chunks( keyData, self.keyLens )
+        receiptKey = keyDataIt.next()
+        print "Receipt Key =", hexlify( receiptKey ).upper()
+        expReceipt = self.receiptAlgo( receiptKey, data2rec )
+        assert receipt == expReceipt, "Receipt verification failed"
+        return [ k for k in keyDataIt if k ] # skip empty rest
 
 def selectApplet( c, AID, logCh = 0 ):
     """ Select applet on a given logical channel or
