@@ -35,8 +35,9 @@ from Crypto.Cipher import DES, DES3
 from smartcard.System import readers
 from smartcard.CardConnectionDecorator import CardConnectionDecorator
 # asterix
-from formutil import l2s, partition, bxor, pad80, unpad80
+from formutil import l2s, s2l, partition, bxor, pad80, unpad80
 from mycard import ISOException
+from GAF import GAF
 __all__ = ( 'SCP02', 'SCP02Connection' )
 
 ZERO8 = '\0' * 8
@@ -224,7 +225,15 @@ Input APDU and output APDU are list of uint8. """
 
     def unwrapAPDU( self, apdu ):
         """ Parse MACed/encrypted APDU, decipher and check MAC. """
-        pass
+        raise AssertError( "Not implemented yet" )
+
+    def wrapResp( self, resp, sw1, sw2 ):
+        """ Wrap expected response as card would do. Currently no action"""
+        return resp, sw1, sw2
+
+    def unwrapResp( self, resp, sw1, sw2 ):
+        """ Unwrap response. Currently no action"""
+        return resp, sw1, sw2
 
     def wrapData( self, data, zPad = False ):
         """ Cipher data by DEK. """
@@ -329,6 +338,11 @@ class SCP02Connection( CardConnectionDecorator ):
         self.scp = SCP02( **kw )
         self.connection = connection
         CardConnectionDecorator.__init__( self, connection )
+        if 'GAFdict' in kw:
+            assert isinstance( kw['GAFdict'], dict ), "GAF dictionary expected"
+            self.objects = kw['GAFdict']
+        else:
+            self.objects = {}
 
     def mut_auth( self, SL, logCh = 0, **kw ):
         """ Perform mutual authentication.
@@ -379,6 +393,26 @@ Optional paramters in kw:
         """ Get Response from the last APDU."""
         apdu = [ self.scp.CLA( False, 0 ), 0xC0, 0, 0, sw2 ]
         return CardConnectionDecorator.transmit( self, apdu )
+
+    def send( self, templ, **kw ):
+        """ Evaluate GAF and transmit as APDU
+templ   - a GAF template to evaluate
+kw      - GAF dictionary (updates dictionary from SCP02Connection.__init__)
+Return ( resp, SW ) as ( str, int )"""
+        objects = self.objects.copy()
+        objects.update( kw )
+        papdu = s2l( GAF( templ ).eval( **objects ))
+        apdu = self.scp.wrapAPDU( papdu )
+        resp, sw1, sw2 = CardConnectionDecorator.transmit( self, apdu )
+        if sw1 == 0x6C and len( papdu ) == 5:
+            papdu[4] = sw2
+            apdu = self.scp.wrapAPDU( papdu )
+            resp, sw1, sw2 = CardConnectionDecorator.transmit( self, apdu )
+        elif sw1 == 0x61:
+            resp, sw1, sw2 = self.getResponse( sw2 )
+        resp, sw1, sw2 = self.scp.unwrapResp( resp, sw1, sw2 )
+        sw = ( sw1 << 8 ) + sw2
+        return l2s( resp ), sw
 
     def getDEK( self ):
         return DEK( self.scp.ses_DEK )

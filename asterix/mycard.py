@@ -99,6 +99,10 @@ class GAFConnection( CardConnectionDecorator ):
         self.connection = connection
         CardConnectionDecorator.__init__( self, connection )
     def send( self, templ, **kw ):
+        """ Evaluate GAF and transmit as APDU
+templ   - a GAF template to evaluate
+kw      - GAF dictionary (updates dictionary from GAFConnection.__init__)
+Return ( resp, SW ) as ( str, int )"""
         objects = self.objects.copy()
         objects.update( kw )
         sapdu = GAF( templ ).eval( **objects )
