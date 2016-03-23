@@ -35,12 +35,9 @@ from Crypto.PublicKey import RSA
 from Crypto.Util import number
 from Crypto.Cipher import DES, DES
 # asterix
-from formutil import int2s, derLen, pad80
+from formutil import int2s, derLen, derLV, pad80
+from GAF import GAF
 __all__ = ( 'Applet', 'RSAtoken', 'DEStoken', 'DESsign', 'RSAsign' )
-
-def berlv( strval ):
-    """ Prepend length (coded as ASN1 DER) of the strval and return as LV."""
-    return derLen( strval ) + strval
 
 INS_DELETE  = 0xE4
 INS_INSTALL = 0xE6
@@ -63,8 +60,10 @@ Expected parameters (in dict):
   AID_module   - (string, mandatory)
   AID_instance - (string, optional, default AID_module)
   privileges   - (string, optional, default '\0'
-  par_sys      - System specific params, tag EF, list of strings
+  par_sys      - System specific params for I4Install, tag EF, list of strings
                  optional, default ['C8020000', 'C7020000'] + SIMtoolkit
+  par_sysLoad  - System specific params for I4Load, tag EF, list of strings
+                 optional, default ['C6020000', 'C7020000', 'C8020000']
   par_sys_sim  - SIM file access and Toolkit app. specific params, tag EF/CA,
                  optional, default not present
   par_UICC_toolkit - UICC toolkit app. specific, tag EA/80, string,
@@ -76,7 +75,7 @@ Expected parameters (in dict):
   file_ijc     - path/filename to *.ijc
 """
         keywords = ( 'AID_package', 'AID_module', 'AID_instance', 'privileges',
-                     'par_sys', 'par_sys_sim',
+                     'par_sys', 'par_sysLoad', 'par_sys_sim',
                      'par_UICC_toolkit', 'par_UICC_DAP',
                      'par_UICC_access', 'par_UICC_admin_access',
                      'par_applet',
@@ -88,49 +87,44 @@ Expected parameters (in dict):
         """ Build Install for install APDU.
   token        - instance of Token, calculates token for Delegated
                  management if present"""
-        privileges = 'privileges' in self.__dict__ \
-                     and self.privileges or '\x00'
-        if 'par_sys' in self.__dict__:
-            sys_spec_par = ''.join( self.par_sys )
-        else:
-            sys_spec_par = unhexlify( "C7020000C8020000" )
+        privileges = getattr( self, 'privileges', '\0' )
+        sys_spec_par = ''.join( getattr( self, 'par_sys', [
+            unhexlify( "C7020000" ), unhexlify( "C8020000" ) ]))
         if 'par_sys_sim' in self.__dict__:
-            sys_spec_par += '\xCA' + berlv( self.par_sys_sim )
-        sys_spec_par = '\xEF' + berlv( sys_spec_par )
+            sys_spec_par += '\xCA' + derLV( self.par_sys_sim )
+        sys_spec_par = '\xEF' + derLV( sys_spec_par )
 
         app_spec_par = 'par_applet' in self.__dict__ \
                        and self.par_applet or ''
-        app_spec_par = '\xC9' + berlv( app_spec_par )
+        app_spec_par = '\xC9' + derLV( app_spec_par )
 
         uicc_spec = []
         if 'par_UICC_toolkit' in self.__dict__:
-            uicc_spec.append( '\x80' + berlv( self.par_UICC_toolkit ))
+            uicc_spec.append( '\x80' + derLV( self.par_UICC_toolkit ))
         if 'par_UICC_DAP' in self.__dict__:
-            uicc_spec.append( '\xC3' + berlv( self.par_UICC_DAP ))
+            uicc_spec.append( '\xC3' + derLV( self.par_UICC_DAP ))
         if 'par_UICC_access' in self.__dict__:
-            uicc_spec.append( '\x81' + berlv( self.par_UICC_access ))
+            uicc_spec.append( '\x81' + derLV( self.par_UICC_access ))
         if 'par_UICC_admin_access' in self.__dict__:
-            uicc_spec.append( '\x82' + berlv( self.par_UICC_admin_access ))
+            uicc_spec.append( '\x82' + derLV( self.par_UICC_admin_access ))
         if uicc_spec:
-            uicc_sys_par = ''.join( uicc_spec )
-            uicc_sys_par = '\xEA' + berlv( uicc_sys_par )
+            uicc_sys_par = '\xEA' + derLV( ''.join( uicc_spec ))
         else:
             uicc_sys_par = ''
 
-        AID_inst = 'AID_instance' in self.__dict__ \
-                   and self.AID_instance or self.AID_module
+        AID_inst = getattr( self, 'AID_instance', self.AID_module )
 
         params = app_spec_par + sys_spec_par + uicc_sys_par
         if token:
             params += token.getCRT()
-        data = berlv( self.AID_package ) + \
-               berlv( self.AID_module ) + \
-               berlv( AID_inst ) + \
-               berlv( privileges ) + \
-               berlv( params )
+        data = derLV( self.AID_package ) + \
+               derLV( self.AID_module ) + \
+               derLV( AID_inst ) + \
+               derLV( privileges ) + \
+               derLV( params )
         if token:
             data2sign = pack( "BBB", P1_INST_INSMSEL, 0, len( data )) + data 
-            data += berlv( token.calc( data2sign ))
+            data += derLV( token.calc( data2sign ))
         else:
             data += '\0'
         
@@ -151,7 +145,7 @@ Expected parameters (in dict):
                  is inserted (each signature_function called on LFDB hash).
                  Example of signature_function: DESsign.calc or RSAsign.calc
   cipher       - cipher function for Ciphere Load File Data Block
-                 if present, D4 #( Cipher( <ijc content> ) sent instead of C4
+                 if present, D4#(cipher(<ijc content>)) sent instead of C4
   AID_SD       - AID of SD to load package to
 """
         f = open( self.file_ijc, "rb" )
@@ -164,24 +158,23 @@ Expected parameters (in dict):
             ( self.file_ijc, ijc_len, hexlify( ijc_hash ).upper())
 
         # build Install for load APDU
-        if 'par_sys' in self.__dict__:
-            params += ''.join( self.par_sys )
-        else:
-            params += unhexlify( "C6020000C7020000C8020000" )
-        params = '\xEF' + berlv( params )
+        sysparams = ''.join( getattr( self, 'par_sysLoad', [
+            unhexlify( "C6020000" ),unhexlify( "C7020000" ),
+            unhexlify( "C8020000" ) ]))
+        params = '\xEF' + derLV( sysparams )
         if token:
             params += token.getCRT()
 
         # put ijc hash only if token or DAP is present
         ins_hash = ( token is not None or len( DAP ) > 0 ) and ijc_hash or ''
-        data = berlv( self.AID_package ) + \
-               berlv( AID_SD ) + \
-               berlv( ins_hash ) + \
-               berlv( params )
+        data = derLV( self.AID_package ) + \
+               derLV( AID_SD ) + \
+               derLV( ins_hash ) + \
+               derLV( params )
 
         if token:
             data2sign = pack( "BBB", P1_INST_LOAD, 0, len( data )) + data 
-            data += berlv( token.calc( data2sign ))
+            data += derLV( token.calc( data2sign ))
         else:
             data += '\0'
 
@@ -197,9 +190,9 @@ Expected parameters (in dict):
             sig = d[1]( icj_hash ) # calculate signature
             load_data += E2template.eval( aid=d[0], sig=sig )
         if cipher:
-            load_data += '\xD4' + berlv( cipher( ijc_data ))
+            load_data += '\xD4' + derLV( cipher( ijc_data ))
         else:
-            load_data += '\xC4' + berlv( ijc_data )
+            load_data += '\xC4' + derLV( ijc_data )
 
         napdu = ( len( load_data ) + datalen-1 ) / datalen
         P1 = 0
@@ -217,11 +210,11 @@ Expected parameters (in dict):
         """ Build delete APDU (either package or instance )
   token        - instance of Token, calculates token for Delegated
                  management if present"""
-        data = '\x4F' + berlv( aid )
+        data = '\x4F' + derLV( aid )
         if token:
             data += token.getCRT()
             data2sign = pack( "BBB", 0, P2, len( data )) + data
-            data += '\x9E' + berlv( token.calc( data2sign ))
+            data += '\x9E' + derLV( token.calc( data2sign ))
         apdu = [ 0x80, INS_DELETE, 0, P2, len( data )] + \
                [ ord(x) for x in data ]
         return apdu
@@ -252,12 +245,12 @@ Expected parameters (in dict):
                    and self.AID_instance or self.AID_module
 
         params = token and token.getCRT() or ''
-        data = berlv( aid_sd ) + '\0' + berlv( AID_inst ) + '\0' +\
-               berlv( params )
+        data = derLV( aid_sd ) + '\0' + derLV( AID_inst ) + '\0' +\
+               derLV( params )
 
         if token:
             data2sign = pack( "BBB", P1_INST_EXTRA, 0, len( data )) + data 
-            data += berlv( token.calc( data2sign ))
+            data += derLV( token.calc( data2sign ))
         else:
             data += '\0'
         assert len( data ) < 0x100, "Data longer than 0xFF: 0x%X '%s'" % \
@@ -270,7 +263,7 @@ Expected parameters (in dict):
         """ Build install for perso APDU """
         AID_inst = 'AID_instance' in self.__dict__ \
                    and self.AID_instance or self.AID_module
-        data = '\0\0' + berlv( AID_inst ) + '\0\0\0'
+        data = '\0\0' + derLV( AID_inst ) + '\0\0\0'
         apdu = [ 0x80, INS_INSTALL, P1_INST_PERSO, 0, len( data ) ] +\
                [ ord(x) for x in data ]
         return apdu
@@ -325,9 +318,9 @@ class Token:
         data = ''
         for t in Token.CRTtags:
             if t in self.__dict__:
-                data += unhexlify(t[1:]) + berlv( self.__dict__[t] )
+                data += unhexlify(t[1:]) + derLV( self.__dict__[t] )
         if data:
-            return '\xB6' + berlv( data )
+            return '\xB6' + derLV( data )
         else:
             return ''
     def calc( self, s ):
