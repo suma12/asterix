@@ -26,7 +26,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 from struct import pack, unpack
 from binascii import hexlify, unhexlify
 # asterix
-from formutil import int2s, l2s, derLen, readDERlen, split2TLV
+from formutil import int2s, l2s, derLen, derLV, readDERlen, split2TLV
 __all__ = ( 'ProactiveException', 'SMS_MO', 'SMS_MT', 'ProactiveSession' )
 
 class ProactiveException( Exception ):
@@ -101,7 +101,7 @@ class SMS_MT( object ):
         self.PID = 0x7F
         self.DCS = 0xF6
         self.SCTS = '\0'*7
-        self.UDH = '\x70\x00' # USIM message
+        self.UDH = pack( "BB", IEI_COMPACK, 0 ) # USIM message
         self.concRef = 0
         self.zConc8b = True
         self.messages = {}
@@ -201,25 +201,26 @@ class SMS_MT( object ):
                     raise AssertionError( "Mismatched UDH " +
                                           hexlify( UDH ).upper())
             # find concat IE
-            concatUDH = [ u for u in IE if ord( u[0] ) in ( 0, 8 ) ]
-            otherUDH = [ u for u in IE if ord( u[0] ) not in ( 0, 8 ) ]
+            concatUDH = [u for u in IE
+                         if ord(u[0]) in (IEI_CONCAT8b, IEI_CONCAT16b)]
+            otherUDH = [u for u in IE
+                        if ord(u[0]) not in (IEI_CONCAT8b, IEI_CONCAT16b)]
             assert len( concatUDH ) <= 1, "More than 1 concat IE"
             if len( concatUDH ) == 0:
                 self.UDH = UDH
                 self.nMes = 1
                 self.messages[1] = tpdu[off:]
                 return
-            UDH = ''.join( otherUDH )
-            UDH = chr( len( UDH )) + UDH
+            UDH = derLV( ''.join( otherUDH ) )
             concatIE = concatUDH[0]
-            if concatIE[0] == '\0':
+            assert ord(concatIE[0]) in (IEI_CONCAT8b, IEI_CONCAT16b)
+            zConc8b = ord(concatIE[0]) == IEI_CONCAT8b
+            if zConc8b:
                 assert len( concatIE ) == 5, "Wrong Concat 8b IE"
                 concRef, nMes, iMes = unpack( "BBB", concatIE[2:] )
-                zConc8b = True
             else:
                 assert len( concatIE ) == 6, "Wrong Concat 16b IE"
                 concRef, nMes, iMes = unpack( ">HBB", concatIE[2:] )
-                zConc8b = True
             if self.messages:
                 for i in ( 'MTI', 'OA', 'PID', 'DCS', 'SCTS', 'zConc8b',
                            'concRef', 'nMes' ):
@@ -323,10 +324,10 @@ class SMS_MO( object ):
                 IEs.append( TLV( tag, IEstring[off:off+l] ))
                 off += l
             # find concat IE
-            concIE = [ x for x in IEs if x.tag in( '\x00', '\x08' ) ]
+            concIE = [x for x in IEs if x.tag in (IEI_CONCAT8b, IEI_CONCAT16b)]
             assert len( concIE ) <= 1, "More concat IEs"
             if concIE:
-                self.zConc8b = concIE[0].tag == '\x00'
+                self.zConc8b = concIE[0].tag == IEI_CONCAT8b
                 assert concIE[0].len() == ( self.zConc8b and 3 or 4 ),\
                     "Wrong length of concat IE"
                 concRef = unpack( self.zConc8b and "B" or ">H", 
@@ -347,7 +348,8 @@ class SMS_MO( object ):
             else:
                 iMes = self.nMes = 1
             self.messages[iMes] = UD[1+UDHL:]
-            otherIE = [x for x in IEs if x.tag not in ( '\0', '\x08' )]
+            otherIE = [x for x in IEs
+                       if x.tag not in (IEI_CONCAT8b, IEI_CONCAT16b)]
             if otherIE:
                 if iMes == 1:
                     UDH = ''.join([ x.bytestr() for x in otherIE ])
@@ -362,7 +364,8 @@ class SMS_MO( object ):
 
     def mergeMessages( self ):
         """ Merge accumulated messages. """
-        if not self.nMes: return ( self.UDH, '' )
+        if self.nMes is None:
+            return ( self.UDH, '' )
 
         # check that all messages are stored
         missing = [ i for i in range( 1, self.nMes+1 ) \
@@ -581,4 +584,8 @@ GR_ABORT           = 0x10
 GR_MOVEBACK        = 0x11
 GR_TIMEOUT         = 0x12
 GR_TEMPUNAVAIL     = 0x20
-
+# Information Element Identifier, TS 123.040, 9.2.3.24
+IEI_CONCAT8b   = 0x00
+IEI_CONCAT16b  = 0x08
+IEI_COMPACK    = 0x70  # TS 131.115, 4.2
+IEI_RESPPACK   = 0x71  # TS 131.115, 4.4

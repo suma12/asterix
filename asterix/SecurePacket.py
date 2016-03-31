@@ -72,7 +72,7 @@ class KICD:
     CRC32       = 0x04
     def keyInd( self ):
         """ Return index of key. """
-        return self.iKICD >> 8
+        return self.iKICD >> 4
     def __init__( self, iKICD ):
         """ Constructor for KIC/KID object.
  iKICD - coding of KIC or KID (see ETSI 102.225, 5.1.2 and 5.1.3, u8)"""
@@ -222,6 +222,8 @@ class SecurePacket( object ):
         if zResp: spi <<= 6  # move CHSUM2 bits to CHSUM1 position
         chsumType = spi & SPI.CHSUM1
         if chsumType == 0:
+            if iKID is None:
+                iKID = 0
             chsumLen = 0
             KIDsign = None
         elif chsumType == SPI.CHSUM1_RC:
