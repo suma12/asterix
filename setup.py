@@ -1,14 +1,14 @@
-
 from distutils.core import setup
 
 setup(name='asterix',
       version='0.3dev',
-      description='Framework for communication with smartcards based on pyscard.',
+      description=
+      'Framework for communication with smartcards based on pyscard.',
       author='Petr Tobiska',
       author_email='petr.tobiska@gmail.com',
       url='https://github.com/suma12/asterix',
       packages=['asterix'],
-      platforms=[ 'win32', 'linux2' ],
+      platforms=['win32', 'linux2'],
       license='GNU LESSER GENERAL PUBLIC LICENSE',
       long_description="""
 asterix is a framework for communication with smartcards based on pyscard
@@ -36,5 +36,4 @@ All modules are platform independent, working with Python 2.7
 
 All modules rely on pyscard, a package implementing PCSC layer
 for communication with smartcards.
-""",
-     )
+""", )

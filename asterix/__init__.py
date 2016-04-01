@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """ asterix/__init__.py
 
 __author__ = "Petr Tobiska"
@@ -26,5 +25,5 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 from . import mycard, formutil, GAF, APDU, applet, SCP02, SCP03
 from . import SecurePacket, CAT
-__all__ = ( mycard, formutil, GAF, APDU, applet, SCP02, SCP03,
-            SecurePacket, CAT )
+__all__ = (mycard, formutil, GAF, APDU, applet, SCP02, SCP03,
+           SecurePacket, CAT)
