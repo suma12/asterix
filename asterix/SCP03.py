@@ -579,9 +579,10 @@ aid            - AID to select (string, default self.scp)
         apdu_w = self.scp.wrapAPDU( apdu )
         resp, sw1, sw2 = CardConnectionDecorator.transmit( self, apdu_w,
                                                            protocol )
-        if sw1 == 0x61:
-            resp, sw1, sw2 = self.getResponse( sw2 )
-            resp, sw1, sw2 = self.scp.unwrapResp( resp, sw1, sw2 )
+        while sw1 == 0x61:
+            resp1, sw1, sw2 = self.getResponse( sw2 )
+            resp += resp1
+        resp, sw1, sw2 = self.scp.unwrapResp( resp, sw1, sw2 )
         return resp, sw1, sw2
 
     def getResponse( self, sw2 ):
@@ -603,8 +604,10 @@ Return ( resp, SW ) as ( str, int )"""
             papdu[4] = sw2
             apdu = self.scp.wrapAPDU( papdu )
             resp, sw1, sw2 = CardConnectionDecorator.transmit( self, apdu )
-        elif sw1 == 0x61:
-            resp, sw1, sw2 = self.getResponse( sw2 )
+        else:
+            while sw1 == 0x61:
+                resp1, sw1, sw2 = self.getResponse(sw2)
+                resp += resp1
         resp, sw1, sw2 = self.scp.unwrapResp( resp, sw1, sw2 )
         sw = ( sw1 << 8 ) + sw2
         return l2s( resp ), sw
