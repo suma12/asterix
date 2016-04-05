@@ -428,6 +428,10 @@ Input APDU and output APDU are list of u8. """
 
     def wrapResp(self, resp, sw1, sw2):
         """ Wrap expected response as card would do."""
+        sw = (sw1 << 8) + sw2
+        if not(sw == 0x9000 or sw1 in (0x62, 0x63)):
+            assert len(resp) == 0, "No response data expected"
+            return [], sw1, sw2
         dresp = l2s(resp)
         if (self.SL | self.rmacSL) & SL_RENC and len(dresp) > 0:
             assert len(dresp) <= 0xEF, "Data too long for RENC+RMAC"
@@ -719,4 +723,3 @@ class Test128(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-        
