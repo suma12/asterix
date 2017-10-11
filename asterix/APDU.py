@@ -2,7 +2,7 @@
 
 __author__ = "Petr Tobiska"
 
-Author: Petr Tobiska, mailto:petr.tobiska@gmail.com, petr.tobiska@gemalto.com
+Author: Petr Tobiska, mailto:petr.tobiska@gmail.com
 
 This file is part of asterix, a framework for  communication with smartcards
  based on pyscard. This file implements handfull APDU commands.
@@ -51,13 +51,22 @@ __all__ = ('calcKCV', 'putKey', 'storeDataPutKey',
            'selectApplet', 'openLogCh', 'closeLogCh',
            'getStatus', 'getExtCardRes', 'getData',
            'selectFile', 'readBinary', 'readRecord',
-           'cardInfo', 'KeyType')
+           'updateBinary', 'updateRecord',
+           'verifyPin', 'changePin', 'disablePin', 'enablePin', 'unblockPin',
+           'selectUSIM', 'cardInfo', 'KeyType')
 
+INS_VERIFY_PIN   = 0x20
+INS_CHANGE_PIN   = 0x24
+INS_DISABLE_PIN  = 0x26
+INS_ENABLE_PIN   = 0x28
+INS_UNBLOCK_PIN  = 0x2C
 INS_MANAGE_LOGCH = 0x70
 INS_SELECT       = 0xA4
 INS_READBIN      = 0xB0
 INS_READREC      = 0xB2
 INS_GETDATA      = 0xCA    
+INS_UPDBIN       = 0xD6
+INS_UPDREC       = 0xDC
 INS_PUTKEY       = 0xD8
 INS_STOREDATA    = 0xE2
 INS_GETSTATUS    = 0xF2
@@ -650,19 +659,150 @@ def readRecord(c, recNum, logCh=0):
         raise ISOException(sw)
     return l2s(resp)
 
+def updateBinary(c, data, logCh=0, offset=0):
+    """Update binary on currently selected EF"""
+    assert len(data) < 0x100
+    P1 = (offset >> 8) & 0x7F
+    P2 = offset & 0xFF
+    apdu = [logCh, INS_UPDBIN, P1, P2, len(data)] + s2l(data)
+    resp, sw1, sw2 = c.transmit(apdu)
+    sw = (sw1 << 8) + sw2
+    if sw != 0x9000:
+        raise ISOException(sw)
 
-def cardInfo(c):
+
+def updateRecord(c, recNum, data, logCh=0):
+    """ Update record from currently selected EF"""
+    assert len(data) < 0x100
+    apdu = [logCh, INS_UPDREC, recNum, 4, len(data)] + s2l(data)
+    resp, sw1, sw2 = c.transmit(apdu)
+    sw = (sw1 << 8) + sw2
+    if sw != 0x9000:
+        raise ISOException(sw)
+
+def verifyPin(c, pin=None, P2=0x01, logCh=0):
+    """Verify PIN
+pin   - value (str, 4-8bytes). If None, just get number of tries.
+P2    - PIN identification (0x01: PIN1 (default), 0x81: PIN2, etc.)
+logCh - logical channel (default 0)
+Return number of remaing tries or True if verification succesfull.
+"""
+    lc = 0 if pin is None else 8
+    apdu = [logCh, INS_VERIFY_PIN, 0, P2, lc]
+    if pin is not None:
+        assert 4 <= len(pin) <= 8
+        pin += '\xFF' * (8 - len(pin))
+        apdu += s2l(pin)
+    resp, sw1, sw2 = c.transmit(apdu)
+    sw = (sw1 << 8) + sw2
+    if sw == 0x6983:  # PIN blocked
+        return 0
+    if 0x63C0 <= sw <= 0x63CA:  # remaining tries
+        return sw - 0x63C0
+    if sw != 0x9000:
+        raise ISOException(sw)
+    return True   # pin verified
+
+def changePin(c, oldPin, newPin, P2=0x01, logCh=0):
+    """Change PIN
+oldPin   - old PIN value (str, 4-8bytes)
+newPin   - new PIN value (str, 4-8bytes)
+P2    - PIN identification (0x01: PIN1 (default), 0x81: PIN2, etc.)
+logCh - logical channel (default 0)
+"""
+    assert 4 <= len(oldPin) <= 8
+    oldPin += '\xFF' * (8 - len(oldPin))
+    assert 4 <= len(newPin) <= 8
+    newPin += '\xFF' * (8 - len(newPin))
+    apdu = [logCh, INS_CHANGE_PIN, 0, P2, 0x10] + s2l(oldPin) + s2l(newPin)
+    resp, sw1, sw2 = c.transmit(apdu)
+    sw = (sw1 << 8) + sw2
+    if sw != 0x9000:
+        raise ISOException(sw)
+
+def disablePin(c, pin, P2=0x01, logCh=0):
+    """Disable PIN
+pin   - PIN value (str, 4-8bytes)
+P2    - PIN identification (0x01: PIN1 (default), 0x81: PIN2, etc.)
+logCh - logical channel (default 0)
+"""
+    assert 4 <= len(pin) <= 8
+    pin += '\xFF' * (8 - len(pin))
+    apdu = [logCh, INS_DISABLE_PIN, 0, P2, 8] + s2l(pin)
+    resp, sw1, sw2 = c.transmit(apdu)
+    sw = (sw1 << 8) + sw2
+    if sw != 0x9000:
+        raise ISOException(sw)
+    
+def enablePin(c, pin, P2=0x01, logCh=0):
+    """Enable PIN
+pin   - PIN value (str, 4-8bytes)
+P2    - PIN identification (0x01: PIN1 (default), 0x81: PIN2, etc.)
+logCh - logical channel (default 0)
+"""
+    assert 4 <= len(pin) <= 8
+    pin += '\xFF' * (8 - len(pin))
+    apdu = [logCh, INS_ENABLE_PIN, 0, P2, 8] + s2l(pin)
+    resp, sw1, sw2 = c.transmit(apdu)
+    sw = (sw1 << 8) + sw2
+    if sw != 0x9000:
+        raise ISOException(sw)
+    
+def unblockPin(c, puk, newPin, P2=0x01, logCh=0):
+    """unblock PIN
+puk    - new PIN value (str, 4-8bytes)
+newPin - PIN value (str, 4-8bytes)
+P2     - PIN identification (0x01: PIN1 (default), 0x81: PIN2, etc.)
+logCh  - logical channel (default 0)
+"""
+    assert len(puk) == 8
+    assert 4 <= len(newPin) <= 8
+    newPin += '\xFF' * (8 - len(newPin))
+    apdu = [logCh, INS_UNBLOCK_PIN, 0, P2, 0x10] + s2l(puk) + s2l(newPin)
+    resp, sw1, sw2 = c.transmit(apdu)
+    sw = (sw1 << 8) + sw2
+    if sw != 0x9000:
+        raise ISOException(sw)
+
+def selectUSIM(c, logCh=0):
+    """Select USIM, return AID
+Read EF_DIR, USIM = first application with AID of USIM (3GPP TS 31.110)"""
+    # read EF_DIR
+    infoDIR = selectFile(c, unhexlify('2F00'), logCh)
+    # see ETSI 102.221 11.1.1.4.3 for coding
+    fileDesc = findTLValue(infoDIR, (0x62, 0x82))
+    assert len(fileDesc) == 5 and \
+        fileDesc[:2] == '\x42\x21'  # linear EF
+    recLen, nRec = unpack(">HB", fileDesc[2:5])
+    aids = []
+    for recNum in xrange(1, nRec+1):
+        try:
+            r = readRecord(c, recNum)
+            if r == '\xFF' * len(r):
+                continue
+            aid = findTLValue(r, (0x61, 0x4F))
+            aids.append(aid)
+        except ISOException:
+            break
+    # search for USIM
+    for aid in aids:
+        if aid[:7] == unhexlify('A0000000871002'):
+            infoUSIM = selectApplet(c, aid, logCh)
+            return aid
+    return None
+
+def cardInfo(c, USIMpin=None, logCh=0):
     """Deselect, read EF_DIR, EF_ICCID"""
     resetCard(c)
     histBytes = l2s(ATR(c.getATR()).getHistoricalBytes())
-    infoMF = selectFile(c, '')
+    infoMF = selectFile(c, '', logCh)
     # read EF_ICCID
-    infoICCID = selectFile(c, unhexlify('2FE2'))
+    infoICCID = selectFile(c, unhexlify('2FE2'), logCh)
     fileSize = s2int(findTLValue(infoICCID, (0x62, 0x80)))
     assert fileSize == 10, "Wrong size of EF_ICCID"
     iccid = swapNibbles(readBinary(c, fileSize))
     # read EF_DIR
-    infoDIR = selectFile(c, unhexlify('2F00'))
+    infoDIR = selectFile(c, unhexlify('2F00'), logCh)
     # see ETSI 102.221 11.1.1.4.3 for coding
     fileDesc = findTLValue(infoDIR, (0x62, 0x82))
     assert len(fileDesc) == 5 and \
@@ -680,19 +820,19 @@ def cardInfo(c):
         except ISOException:
             break
     # select USIM and try to read IMSI
-    if len(dirDO) == 1:
-        aid_usim = dirDO[0]['AID']
+    aids = [DO['AID'] for DO in dirDO
+            if DO['AID'][:7] == unhexlify('A0000000871002')]
+    if len(aids) >= 1:
+        aid_usim = aids[0]  # choose the first AID found
     else:
-        aids = [DO['AID'] for DO in dirDO if re.match(DO['label'], 'USIM')]
-        if len(aids) == 1:
-            aid_usim = aids[0]
-        else:
-            aid_usim = None
+        aid_usim = None
     if aid_usim:
-        infoUSIM = selectApplet(c, aid_usim)
-        infoIMSI = selectFile(c, unhexlify('7FFF6F07'))
+        infoUSIM = selectApplet(c, aid_usim, logCh)
+        if USIMpin is not None:
+            verifyPin(c, USIMpin, logCh=logCh)
+        infoIMSI = selectFile(c, unhexlify('7FFF6F07'), logCh)
         try:
-            bimsi = readBinary(c, 9)
+            bimsi = readBinary(c, 9, logCh)
             digits = reduce(lambda d, n: d + [ord(n) & 0x0F, ord(n) >> 4],
                             bimsi[1:1+ord(bimsi[0])], [])
             digits.pop(0)          # remove first nibble 8 or 9
@@ -704,13 +844,13 @@ def cardInfo(c):
     else:
         imsi = None
     # select default applet and get tags 45 and 42
-    selectApplet(c, '')
+    selectApplet(c, '', logCh)
     try:
-        cin = findTLValue(getData(c, 0x42), (0x42))
-    except ISOException:
-        cin = None
-    try:
-        iin = findTLValue(getData(c, 0x45), (0x45))
+        iin = findTLValue(getData(c, T_IIN), (T_IIN,))
     except ISOException:
         iin = None
+    try:
+        cin = findTLValue(getData(c, T_CIN), (T_CIN,))
+    except ISOException:
+        cin = None
     return histBytes, iccid, dirDO, imsi, iin, cin

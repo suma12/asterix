@@ -2,7 +2,7 @@
 
 __author__ = "Petr Tobiska"
 
-Author: Petr Tobiska, mailto:petr.tobiska@gmail.com, petr.tobiska@gemalto.com
+Author: Petr Tobiska, mailto:petr.tobiska@gmail.com
 Date: 2015-11-14
 
 This file is a part of asterix, a framework for communication with smartcards
@@ -24,6 +24,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 """
 
 from . import mycard, formutil, GAF, APDU, applet, SCP02, SCP03
-from . import SecurePacket, CAT
+from . import SecurePacket, CAT, auth3G
 __all__ = (mycard, formutil, GAF, APDU, applet, SCP02, SCP03,
-           SecurePacket, CAT)
+           SecurePacket, CAT, auth3G)

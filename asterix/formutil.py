@@ -2,7 +2,7 @@
 
 __author__ = "Petr Tobiska"
 
-Author: Petr Tobiska, mailto:petr.tobiska@gmail.com, petr.tobiska@gemalto.com
+Author: Petr Tobiska, mailto:petr.tobiska@gmail.com
 
 This file is part of asterix, a framework for  communication with smartcards
  based on pyscard. This file contains formatting utilities.
@@ -31,6 +31,7 @@ from Crypto.PublicKey import RSA
 __all__ = ('l2s', 's2l', 's2int', 'int2s', 's2sDER', 'lpad', 'derLen', 'derLV',
            'readDERlen', 'readDERtag', 'split2TLV', 'printTLV', 'findTLValue',
            'randomBytes', 'swapNibbles', 'partition', 'chunks', 'bxor',
+           'swapBCD', 'luhn_checksum', 'is_luhn_valid', 'calculate_luhn',
            'pad80', 'unpad80', 'dict2RSA', 's2ECP')
 
 
@@ -271,6 +272,34 @@ def bxor(a, b):
         'String XOR: lengths differ: %d vs %d\n' % (len(a), len(b))
     return ''.join(map(lambda x: chr(ord(x[0]) ^ ord(x[1])), zip(a, b)))
 
+def swapBCD(s):
+    """Swap odd-even digits in string s, pad by 'F' if odd-long"""
+    if len(s) % 2 == 1:
+        s += 'F'
+    tup = zip(s[1::2],s[0::2])
+    return ''.join([i for t in tup for i in t])
+
+def luhn_checksum(number):
+    """Calculate Luhn checksum of number (integer)"""
+    def digits_of(n):
+        return [int(d) for d in str(n)]
+    digits = digits_of(number)
+    odd_digits = digits[-1::-2]
+    even_digits = digits[-2::-2]
+    checksum = 0
+    checksum += sum(odd_digits)
+    for d in even_digits:
+        checksum += sum(digits_of(d*2))
+    return checksum % 10
+
+def is_luhn_valid(number):
+    return luhn_checksum(number) == 0
+
+def calculate_luhn(partial_number):
+    """Calculate Luhn-checksum digit so the number
+10 * partial_number + digit has valid checksum"""
+    check_digit = luhn_checksum(int(partial_number) * 10)
+    return check_digit if check_digit == 0 else 10 - check_digit
 
 def dict2RSA(**kw):
     """ Create Crypto.PublicKey.RSA from dict

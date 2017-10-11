@@ -1,7 +1,7 @@
 from distutils.core import setup
 
 setup(name='asterix',
-      version='0.3dev',
+      version='0.3',
       description=
       'Framework for communication with smartcards based on pyscard.',
       author='Petr Tobiska',
@@ -31,6 +31,8 @@ It consists of
                  defined in ETSI TS 102.223
  SecurePacket  - a module implementing Secure Packet for OTA
                  communication with smartcards
+ auth3G        - a module implementing authentication and key agreement
+                 in 3G/4G networks (namely Milenage algorithm)
 
 All modules are platform independent, working with Python 2.7
 

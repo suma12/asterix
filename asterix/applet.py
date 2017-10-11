@@ -2,7 +2,7 @@
 
 __author__ = "Petr Tobiska"
 
-Author: Petr Tobiska, mailto:petr.tobiska@gmail.com, petr.tobiska@gemalto.com
+Author: Petr Tobiska, mailto:petr.tobiska@gmail.com
 Date: 2015-11-16
 
 This file is part of asterix, a framework for communication with smartcards

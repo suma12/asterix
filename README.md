@@ -3,7 +3,7 @@ asterix, a framework for communication with smartcards based on pyscard
 https://github.com/suma12/asterix
 -------------------------------------------------------------------------------
 
-Author: Petr Tobiska, mailto:petr.tobiska@gmail.com,
+Author: Petr Tobiska, mailto:petr.tobiska@gmail.com
 
 This file is a part of asterix, a framework for communication with smartcards
 based on pyscard.
@@ -23,7 +23,7 @@ along with pyscard; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 -------------------------------------------------------------------------------
-Last update : asterix 0.3dev (March 2016)
+Last update : asterix 0.3 (November 2017)
 -------------------------------------------------------------------------------
 
 asterix is a framework for communication with smartcards based on pyscard
@@ -62,6 +62,10 @@ It consists of:
   a module implementing Secure Packet for OTA communication
   with smartcards
 
+**auth3G**
+  a module implementing authentication and key agreement
+  in 3G/4G networks (namely Milenage algorithm)
+
 All modules are platform independent, working with Python 2.7
 
 All modules relies on pyscard, a package implementing PCSC layer for
@@ -93,3 +97,4 @@ Dependencies
 The asterix framework depends on the following packages:
  - pyscard >= 1.6.16
  - PyCrypto >= 2.6.1
+ - ECDSA >= 0.11
