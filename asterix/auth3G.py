@@ -40,7 +40,7 @@ def rot(x, r):
     """Cyclically rotate 128b number x by r bit towards the MSb"""
     assert 0 <= x <= MASK128
     assert 0 <= r <= 127
-    return MASK128 & (x << r) | x >> (128-r))
+    return MASK128 & (x << r) | (x >> (128-r))
     
 class MilenageAlgo:
     """Milenage 3G authentication scheme as defined in 3GPP TS 35.201, 35.206
